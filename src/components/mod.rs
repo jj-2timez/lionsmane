@@ -10,9 +10,7 @@ use serde::{Deserialize, Serialize};
 use iroh::{Endpoint, EndpointAddr, protocol::Router, endpoint::presets};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use iroh_gossip::{
-    Gossip, TopicId,
-    api::{Event, GossipReceiver, GossipSender},
+use iroh_gossip::{ Gossip, TopicId,api::{Event, GossipReceiver, GossipSender},
 };
 #[derive(Serialize, Deserialize, Debug)]
 pub enum NetworkMessage {
@@ -27,11 +25,11 @@ pub struct Node {
     pub endpoint: Endpoint,
     pub gossip: Gossip,
     pub gossip_sender: GossipSender,
+    pub router: Router, 
 }
 
 impl Node {
-    pub async fn new(
-        blockchain_topic_bytes: [u8; 32], bootstrap_peers: Vec<EndpointAddr>) -> anyhow::Result<Self> {
+    pub async fn new(blockchain_topic_bytes: [u8; 32],bootstrap_peers: Vec<EndpointAddr>,) -> anyhow::Result<Self> {
         let transaction_pool = Arc::new(Mutex::new(extrinsic::MemPool::new()));
         let wallet = Wallet::new();
         let ledger = Arc::new(Mutex::new(ledger::Ledger::new()));
@@ -40,29 +38,29 @@ impl Node {
 
         let gossip = Gossip::builder().spawn(endpoint.clone());
 
-        let _router = Router::builder(endpoint.clone())
+        // THE FIX: Bind to a proper variable (no underscore) so we can return it.
+        let router = Router::builder(endpoint.clone())
             .accept(iroh_gossip::ALPN, gossip.clone())
             .spawn();
 
         let topic_id = TopicId::from_bytes(blockchain_topic_bytes);
-
-        // --- THE FIX: PRE-WARM THE QUIC CONNECTIONS ---
         let mut seed_peer_ids = Vec::new();
-        let mut _active_connections = Vec::new();
 
         for peer_addr in bootstrap_peers {
             seed_peer_ids.push(peer_addr.id);
             
             // Explicitly dial the raw IPs embedded in the EndpointAddr.
-            // This forces the Endpoint to instantly hole-punch and bypass the global DNS delay.
             if let Ok(conn) = endpoint.connect(peer_addr.clone(), iroh_gossip::ALPN).await {
-                // Keep the connection handle alive in memory so Gossip can instantly reuse the tunnel
-                _active_connections.push(conn);
+                // THE FIX: Pass the connection handle to a detached async task.
+                // This keeps the QUIC tunnel alive in the background for 15 seconds, 
+                // giving Gossip plenty of time to lock onto the route and handshake.
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    drop(conn);
+                });
             }
         }
 
-        // Now Gossip asks the Endpoint for the peers by ID. The Endpoint sees the 
-        // pre-warmed connection in its active pool and links them together instantly!
         let (gossip_sender, gossip_receiver) = gossip
             .subscribe(topic_id, seed_peer_ids)
             .await?
@@ -75,6 +73,7 @@ impl Node {
             endpoint,
             gossip,
             gossip_sender,
+            router, // Safely pass the router into the Node struct
         };
 
         // Spawn the background network listener
@@ -107,7 +106,6 @@ impl Node {
         pool: Arc<Mutex<extrinsic::MemPool>>,
         ledger: Arc<Mutex<ledger::Ledger>>,
     ) {
-        // Continuously read from the gossip stream
         while let Some(result) = receiver.next().await {
             match result {
                 Ok(event) => match event {
@@ -139,7 +137,7 @@ impl Node {
                             }
                         }
                     }
-                    _ => {} // Ignore other events
+                    _ => {}
                 },
                 Err(e) => {
                     println!("❌ [Network] Gossip stream error: {:?}", e);
