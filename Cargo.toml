@@ -10,6 +10,7 @@ blake3 = "1.8.5"
 ed25519-dalek = {version="3.0", features = ["rand_core"]}
 getrandom = {version="0.4.3", features = ["sys_rng"]}
 hex = "0.4.3"
+starlark = { git = "https://github.com/jj-2timez/starlark-rust", branch = "main" }
 iroh = { version = "1.0.3"}
 iroh-gossip = { version = "0.101.0"}
 rand_core = "0.10.1"

@@ -10,8 +10,11 @@ use serde::{Deserialize, Serialize};
 use iroh::{Endpoint, EndpointAddr, protocol::Router, endpoint::presets};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use iroh_gossip::{ Gossip, TopicId,api::{Event, GossipReceiver, GossipSender},
-};
+use iroh_gossip::{ Gossip, TopicId,api::{Event, GossipReceiver, GossipSender},};
+use starlark::environment::{GlobalsBuilder, Module};
+use starlark::eval::Evaluator;
+use starlark::syntax::{AstModule, Dialect};
+
 #[derive(Serialize, Deserialize, Debug)]
 pub enum NetworkMessage {
     NewTransaction(extrinsic::Extrinsic),
@@ -145,7 +148,47 @@ impl Node {
             }
         }
     }
+    pub fn execute_smart_contract( &self, contract_code: &str, function_name: &str) -> Result<String, String> {
+        // 1. Define the language dialect (Standard Starlark)
+        let dialect = Dialect::Standard;
+
+        // 2. Parse the contract code into an Abstract Syntax Tree (AST)
+        let ast = AstModule::parse("smart_contract.star", contract_code.to_string(), &dialect)
+            .map_err(|e| format!("Parsing Error: {}", e))?;
+
+        // 3. Set up the global functions available to the contract.
+        // CRITICAL: We DO NOT call GlobalsBuilder::extended() because we don't want 
+        // contracts to have access to print(), file I/O, or time functions.
+        let globals = GlobalsBuilder::new().build();
+
+        // 4. Create an isolated module scope for this specific contract instance
+    
+
+        // 5. Create the evaluator engine
+        Module::with_temp_heap(|module| {
+            
+            // 3. Bind the evaluator to the temporary module heap
+            let mut evaluator = Evaluator::new(&module);
+
+            // 4. Evaluate the outer scope to register the smart contract functions
+            evaluator.eval_module(ast, &globals)
+                .map_err(|e| format!("Execution Error: {}", e))?;
+
+            // 5. Extract the compiled function reference
+            let function = module.get(function_name)
+                .ok_or_else(|| format!("Function '{}' not found in contract", function_name))?;
+
+            // 6. Execute the target function
+            let result = evaluator.eval_function(function, &[], &[])
+                .map_err(|e| format!("Runtime Error: {}", e))?;
+
+            // 7. Return the stringified result out of the closure
+            Ok(result.to_string())
+        })
+        // Return the stringified output of the smart contract execution
+    }
 }
+
 pub struct Wallet {
     key_pair: SigningKey,
 }
